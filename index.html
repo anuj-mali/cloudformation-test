@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My To-Do List</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom font */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Style for completed tasks */
+        .completed-task {
+            text-decoration: line-through;
+            color: #9ca3af; /* Tailwind gray-400 */
+        }
+        /* Basic transition for smoother UI updates */
+        li, button {
+            transition: all 0.2s ease-in-out;
+        }
+        /* Simple loading spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: #09f; /* Using a generic blue, can be adjusted */
+            animation: spin 1s ease infinite;
+        }
+        /* Smaller spinner for inline buttons */
+        .spinner.inline-spinner {
+            width: 16px;
+            height: 16px;
+            border-width: 2px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-slate-700 min-h-screen flex flex-col items-center justify-center p-4 text-slate-100">
+
+    <div class="bg-slate-800 shadow-2xl rounded-xl p-6 md:p-8 w-full max-w-2xl">
+        <header class="mb-6 md:mb-8 text-center">
+            <h1 class="text-3xl md:text-4xl font-bold text-sky-400">My Cloud To-Do List</h1>
+            <p class="text-slate-400 mt-1">Powered by AWS Serverless</p>
+        </header>
+
+        <div id="messageArea" class="mb-4 p-3 rounded-md text-sm text-center hidden"></div>
+
+        <section id="addTaskSection" class="mb-6">
+            <form id="addTaskForm" class="flex flex-col sm:flex-row gap-3">
+                <input
+                    type="text"
+                    id="taskDescriptionInput"
+                    placeholder="Enter a new task..."
+                    aria-label="New task description"
+                    class="flex-grow p-3 border border-slate-600 rounded-lg bg-slate-700 text-slate-100 focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none placeholder-slate-500"
+                    required
+                >
+                <button
+                    type="submit"
+                    class="bg-sky-500 hover:bg-sky-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-opacity-75 flex items-center justify-center"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    Add Task
+                </button>
+            </form>
+        </section>
+
+        <div id="loadingIndicator" class="text-center my-8 hidden">
+            <div class="spinner mx-auto"></div>
+            <p class="mt-2 text-slate-400">Loading tasks...</p>
+        </div>
+
+        <section id="taskListSection">
+            <h2 class="text-xl md:text-2xl font-semibold mb-4 text-slate-300 border-b border-slate-700 pb-2">Your Tasks</h2>
+            <ul id="taskList" class="space-y-3">
+                </ul>
+            <p id="noTasksMessage" class="text-center text-slate-500 py-6 hidden">You have no tasks yet. Add one above!</p>
+        </section>
+    </div>
+
+    <footer class="mt-8 text-center text-slate-500 text-sm">
+        <p>© <span id="currentYear"></span> Sunayana/Project.To-Do App.</p>
+    </footer>
+
+    <script>
+        // --- CONFIGURATION ---
+        const API_BASE_URL = '%%API_GATEWAY_BASE_URL%%/tasks';
+
+        // --- DOM Elements ---
+        const taskList = document.getElementById('taskList');
+        const addTaskForm = document.getElementById('addTaskForm');
+        const taskDescriptionInput = document.getElementById('taskDescriptionInput');
+        const messageArea = document.getElementById('messageArea');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const noTasksMessage = document.getElementById('noTasksMessage');
+        document.getElementById('currentYear').textContent = new Date().getFullYear();
+
+        // --- State ---
+        let tasks = []; // Local cache of tasks
+
+        // --- API Helper Functions ---
+
+        /**
+         * Shows a message to the user.
+         * @param {string} text - The message text.
+         * @param {'success' | 'error' | 'info'} type - The type of message.
+         */
+        function showMessage(text, type = 'info') {
+            messageArea.textContent = text;
+            messageArea.classList.remove('hidden', 'bg-green-600', 'bg-red-600', 'bg-sky-600', 'text-green-100', 'text-red-100', 'text-sky-100'); // Tailwind 3 uses bg-green-600, etc.
+
+            if (type === 'success') {
+                messageArea.classList.add('bg-green-600', 'text-green-100');
+            } else if (type === 'error') {
+                messageArea.classList.add('bg-red-600', 'text-red-100');
+            } else { // info
+                messageArea.classList.add('bg-sky-600', 'text-sky-100');
+            }
+            messageArea.classList.remove('hidden');
+
+            setTimeout(() => {
+                messageArea.classList.add('hidden');
+            }, 3000);
+        }
+
+        /**
+         * Fetches tasks from the API.
+         */
+        async function fetchTasks() {
+            // REMOVED incorrect check for configured API_BASE_URL
+
+            loadingIndicator.classList.remove('hidden');
+            noTasksMessage.classList.add('hidden');
+            taskList.innerHTML = '';
+
+            try {
+                const response = await fetch(API_BASE_URL);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: 'Failed to fetch tasks. Server returned an error.' }));
+                    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+                }
+                const fetchedTasks = await response.json();
+                tasks = Array.isArray(fetchedTasks) ? fetchedTasks : (fetchedTasks.items || []);
+                renderTasks();
+            } catch (error) {
+                console.error('Error fetching tasks:', error);
+                showMessage(`Error fetching tasks: ${error.message}`, 'error');
+                noTasksMessage.classList.remove('hidden'); // Show no tasks message on error
+            } finally {
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Creates a new task.
+         * @param {string} description - The description of the task.
+         */
+        async function createTask(description) {
+            // REMOVED incorrect check for configured API_BASE_URL
+
+            const submitButton = addTaskForm.querySelector('button[type="submit"]');
+            const originalButtonContent = submitButton.innerHTML;
+            submitButton.innerHTML = `<div class="spinner mx-auto"></div>`;
+            submitButton.disabled = true;
+
+            try {
+                const response = await fetch(API_BASE_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ description: description, status: 'pending' }),
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: 'Failed to create task. Server returned an error.' }));
+                    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+                }
+                await fetchTasks(); // Refresh task list
+                showMessage('Task added successfully!', 'success');
+                taskDescriptionInput.value = '';
+            } catch (error) {
+                console.error('Error creating task:', error);
+                showMessage(`Error creating task: ${error.message}`, 'error');
+            } finally {
+                submitButton.innerHTML = originalButtonContent;
+                submitButton.disabled = false;
+            }
+        }
+
+        /**
+         * Updates an existing task.
+         * @param {string} taskId - The ID of the task to update.
+         * @param {object} updates - An object containing the fields to update.
+         */
+        async function updateTask(taskId, updates) {
+            // REMOVED incorrect check for configured API_BASE_URL
+
+            const taskElement = document.querySelector(`li[data-id="${taskId}"]`);
+            const actionButton = taskElement ? taskElement.querySelector('.toggle-status-btn') : null;
+            let originalButtonHTML = '';
+
+            if (actionButton) {
+                originalButtonHTML = actionButton.innerHTML;
+                actionButton.innerHTML = `<div class="spinner inline-spinner !border-slate-300 !border-l-transparent mx-auto"></div>`; // Adjusted spinner style
+                actionButton.disabled = true;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/${taskId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(updates),
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ message: 'Failed to update task. Server returned an error.' }));
+                    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+                }
+                await fetchTasks(); // Refresh task list
+                showMessage('Task updated successfully!', 'success');
+            } catch (error) {
+                console.error('Error updating task:', error);
+                showMessage(`Error updating task: ${error.message}`, 'error');
+                // If fetchTasks() itself fails, the button might not be reset by the finally block if actionButton becomes null by then
+                // So, restoring here in catch is a safeguard, but finally should handle most cases.
+            } finally {
+                if (actionButton && actionButton.disabled) { // Check if button was actually disabled by this function
+                    actionButton.innerHTML = originalButtonHTML;
+                    actionButton.disabled = false;
+                }
+            }
+        }
+
+        /**
+         * Deletes a task.
+         * @param {string} taskId - The ID of the task to delete.
+         */
+        async function deleteTask(taskId) {
+            // REMOVED incorrect check for configured API_BASE_URL
+
+            const taskElement = document.querySelector(`li[data-id="${taskId}"]`);
+            const deleteButton = taskElement ? taskElement.querySelector('.delete-btn') : null;
+            let originalButtonHTML = '';
+
+            if (deleteButton) {
+                originalButtonHTML = deleteButton.innerHTML;
+                deleteButton.innerHTML = `<div class="spinner inline-spinner !border-slate-300 !border-l-transparent mx-auto"></div>`; // Adjusted spinner style
+                deleteButton.disabled = true;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/${taskId}`, {
+                    method: 'DELETE',
+                });
+                if (!response.ok) {
+                    // Standard fetch: response.ok is true for 200-299.
+                    // For DELETE, a 204 No Content is common and response.ok will be true.
+                    // A 200 OK is also possible.
+                    // So, if !response.ok, it's an actual error (4xx, 5xx).
+                    const errorData = await response.json().catch(() => ({ message: 'Failed to delete task. Server returned an error or non-JSON response.' }));
+                    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+                }
+                // If response.ok is true (e.g. 200, 204), proceed to refresh.
+                await fetchTasks(); // Refresh task list - this is the "reload page after delete"
+                showMessage('Task deleted successfully!', 'success');
+            } catch (error) {
+                console.error('Error deleting task:', error);
+                showMessage(`Error deleting task: ${error.message}`, 'error');
+            } finally {
+                if (deleteButton && deleteButton.disabled) { // Check if button was actually disabled by this function
+                    deleteButton.innerHTML = originalButtonHTML;
+                    deleteButton.disabled = false;
+                }
+            }
+        }
+
+        // --- Rendering Logic ---
+        function renderTasks() {
+            taskList.innerHTML = '';
+            if (tasks.length === 0) {
+                noTasksMessage.classList.remove('hidden');
+                return;
+            }
+            noTasksMessage.classList.add('hidden');
+
+            tasks.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)); // Optional: sort by creation date if available
+
+            tasks.forEach(task => {
+                // Ensure task.id exists, otherwise, operations on it will fail.
+                // The fallback random ID is problematic for API calls.
+                // It's better to ensure the backend provides IDs.
+                const taskId = task.id;
+                if (!taskId) {
+                    console.warn('Task received without an ID:', task);
+                    // Optionally skip rendering or render with a warning if tasks *must* have IDs
+                    // For now, we'll proceed, but update/delete will likely fail for this item.
+                }
+                const taskDescription = task.description || 'No description';
+                const taskStatus = task.status || 'pending';
+
+                const li = document.createElement('li');
+                li.setAttribute('data-id', taskId || `no-id-${Math.random()}`); // Use random if no ID, but flag it
+                li.className = `flex flex-col sm:flex-row items-start sm:items-center justify-between bg-slate-700/50 p-3.5 rounded-lg shadow hover:shadow-slate-600/50 group`;
+
+                const descriptionSpan = document.createElement('span');
+                descriptionSpan.textContent = taskDescription;
+                descriptionSpan.className = 'task-description flex-grow mb-2 sm:mb-0 break-words'; // Added break-words
+                if (taskStatus === 'completed') {
+                    descriptionSpan.classList.add('completed-task');
+                }
+
+                const buttonsDiv = document.createElement('div');
+                buttonsDiv.className = 'flex gap-2 self-end sm:self-center flex-shrink-0'; // Added flex-shrink-0
+
+                const toggleStatusButton = document.createElement('button');
+                toggleStatusButton.classList.add('toggle-status-btn', 'text-sm', 'font-medium', 'py-1.5', 'px-3', 'rounded-md', 'focus:outline-none', 'focus:ring-2', 'focus:ring-opacity-75');
+                if (taskStatus === 'completed') {
+                    toggleStatusButton.textContent = 'Undo';
+                    toggleStatusButton.classList.add('text-amber-400', 'hover:text-amber-300', 'bg-amber-500/10', 'hover:bg-amber-500/20', 'focus:ring-amber-400');
+                } else {
+                    toggleStatusButton.textContent = 'Complete';
+                    toggleStatusButton.classList.add('text-emerald-400', 'hover:text-emerald-300', 'bg-emerald-500/10', 'hover:bg-emerald-500/20', 'focus:ring-emerald-400');
+                }
+                toggleStatusButton.onclick = () => {
+                    if (!taskId) { showMessage('Cannot update task without an ID.', 'error'); return; }
+                    const newStatus = taskStatus === 'completed' ? 'pending' : 'completed';
+                    updateTask(taskId, { status: newStatus });
+                };
+
+                const deleteButton = document.createElement('button');
+                deleteButton.textContent = 'Delete';
+                deleteButton.classList.add('delete-btn', 'text-rose-400', 'hover:text-rose-300', 'bg-rose-500/10', 'hover:bg-rose-500/20', 'text-sm', 'font-medium', 'py-1.5', 'px-3', 'rounded-md', 'focus:outline-none', 'focus:ring-2', 'focus:ring-rose-400', 'focus:ring-opacity-75');
+                deleteButton.onclick = () => {
+                    if (!taskId) { showMessage('Cannot delete task without an ID.', 'error'); return; }
+                    deleteTask(taskId);
+                };
+
+                buttonsDiv.appendChild(toggleStatusButton);
+                buttonsDiv.appendChild(deleteButton);
+
+                li.appendChild(descriptionSpan);
+                li.appendChild(buttonsDiv);
+                taskList.appendChild(li);
+            });
+        }
+
+        // --- Event Listeners ---
+        addTaskForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const description = taskDescriptionInput.value.trim();
+            if (description) {
+                createTask(description);
+            } else {
+                showMessage('Task description cannot be empty.', 'error');
+            }
+        });
+
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTasks();
+        });
+    </script>
+</body>
+</html>
