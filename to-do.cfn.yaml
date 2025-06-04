@@ -1,0 +1,1066 @@
+Parameters:
+  StageName:
+    Type: String
+    Default: dev
+  GitHubRepoOwner:
+    Type: String
+    Description: "The owner (username or organization) of the GitHub repository."
+    Default: anuj-mali
+    # Example:octocat
+  GitHubRepoName:
+    Type: String
+    Description: "The name of the GitHub repository."
+    Default: cloudformation-test
+    # Example: Spoon-Knife
+  GitHubFilePath:
+    Type: String
+    Description: "The path to the index.html file within the GitHub repository with %%API_GATEWAY_BASE_URL%% placeholder."
+    Default: "index.html" # Example: if it's at the root
+    # Example: public/index.html
+  GitHubRef:
+    Type: String
+    Description: "The branch, tag, or commit SHA to fetch the file from (e.g., main, v1.0.0, specific_commit_hash)."
+    Default: "main"
+Resources:
+  LambdaCreateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: "LambdaDynamoDBInsertPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Sid: AllowLogging
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+              - 
+                Sid: PutDynamoDBObject
+                Effect: Allow
+                Action:
+                  - "dynamodb:PutItem"
+                Resource:
+                  - !GetAtt ToDoDynamoDBTable.Arn
+  LambdaGetExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: "LambdaDynamoDBFetchPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Sid: AllowLogging
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+              - 
+                Sid: GetDynamoDBObject
+                Effect: Allow
+                Action:
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Scan"
+                Resource:
+                  - !GetAtt ToDoDynamoDBTable.Arn
+  LambdaUpdateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: "LambdaDynamoDBUpdatePolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Sid: AllowLogging
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+              - 
+                Sid: UpdateDynamoDBObject
+                Effect: Allow
+                Action:
+                  - "dynamodb:UpdateItem"
+                Resource:
+                  - !GetAtt ToDoDynamoDBTable.Arn
+  LambdaDeleteExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - 
+          PolicyName: "LambdaDynamoDBDeletePolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Sid: AllowLogging
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+              - 
+                Sid: DeleteDynamoDBObject
+                Effect: Allow
+                Action:
+                  - "dynamodb:DeleteItem"
+                Resource:
+                  - !GetAtt ToDoDynamoDBTable.Arn
+  ToDoDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - 
+          AttributeType: "S"
+          AttributeName: "id"
+      KeySchema:
+        - 
+          AttributeName: "id"
+          KeyType: "HASH"
+      BillingMode: PAY_PER_REQUEST
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+  GetTaskFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ToDoGetFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref ToDoDynamoDBTable
+      Runtime: python3.13
+      Role: !GetAtt LambdaGetExecutionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          dynamodb = boto3.resource('dynamodb')
+          TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'TodoListTasks') # Ensure this env var is set in Lambda config
+          table = dynamodb.Table(TABLE_NAME)
+
+          def lambda_handler(event, context):
+              print(f"Received event for getAllTodoTasks: {json.dumps(event)}") # Good to log incoming event
+
+              try:
+                  # To get id, description, and status:
+                  # 'status' is a reserved keyword, so we need a placeholder
+                  projection_expression = "id, description, #s"
+                  expression_attribute_names = {
+                      "#s": "status"  # Maps the placeholder #s to the actual attribute name 'status'
+                  }
+
+                  response = table.scan(
+                      ProjectionExpression=projection_expression,
+                      ExpressionAttributeNames=expression_attribute_names
+                  )
+                  
+                  items = response.get('Items', [])
+                  
+                  # Handle pagination if your table might grow large
+                  while 'LastEvaluatedKey' in response:
+                      print(f"Scanning again with LastEvaluatedKey: {response['LastEvaluatedKey']}")
+                      response = table.scan(
+                          ProjectionExpression=projection_expression,
+                          ExpressionAttributeNames=expression_attribute_names,
+                          ExclusiveStartKey=response['LastEvaluatedKey']
+                      )
+                      items.extend(response.get('Items', []))
+
+                  print(f"Returning {len(items)} items.")
+
+                  return {
+                      'statusCode': 200,
+                      'headers': { 
+                          'Access-Control-Allow-Origin': '*', # For CORS
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'OPTIONS,GET' 
+                      },
+                      'body': json.dumps(items)
+                  }
+              except Exception as e:
+                  print(f"Error in getAllTodoTasks: {str(e)}")
+                  # import traceback
+                  # print(traceback.format_exc()) # For more detailed error logging during debugging
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': f'Could not retrieve tasks: {str(e)}'})
+                  }
+  DeleteTaskFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ToDoDeleteFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref ToDoDynamoDBTable
+      Runtime: python3.13
+      Role: !GetAtt LambdaDeleteExecutionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import traceback # For more detailed error logging
+          from decimal import Decimal # Import Decimal
+
+          dynamodb = boto3.resource('dynamodb')
+          TABLE_NAME_FROM_ENV = os.environ.get('DYNAMODB_TABLE_NAME')
+
+          # Helper class to convert a DynamoDB item to JSON.
+          # Specifically handles Decimal types.
+          class DecimalEncoder(json.JSONEncoder):
+              def default(self, o):
+                  if isinstance(o, Decimal):
+                      # If it's an integer, convert to int, otherwise float
+                      if o % 1 == 0:
+                          return int(o)
+                      else:
+                          return float(o)
+                  return super(DecimalEncoder, self).default(o)
+
+          def lambda_handler(event, context):
+              if not TABLE_NAME_FROM_ENV:
+                  print("CRITICAL ERROR: DYNAMODB_TABLE_NAME environment variable is not set!")
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': 'Server configuration error: Table name not set.'})
+                  }
+
+              table = dynamodb.Table(TABLE_NAME_FROM_ENV)
+              print(f"Using DynamoDB table: '{TABLE_NAME_FROM_ENV}'")
+              print(f"Received event: {json.dumps(event)}")
+
+              try:
+                  path_params = event.get('pathParameters', {})
+                  if not path_params: # Ensure pathParameters itself is not None
+                      print("Error: pathParameters is missing in the event.")
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'taskId is required in path parameters (pathParameters missing)'})
+                      }
+
+                  task_id = path_params.get('taskId')
+
+                  if task_id: # Only strip if task_id is not None
+                      task_id = task_id.strip()
+
+                  print(f"Attempting to delete task with ID: '{task_id}' (type: {type(task_id)})")
+
+                  if not task_id: # Checks for None or empty string after strip
+                      print("Error: taskId is required or was empty after strip.")
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'taskId is required in path parameters'})
+                      }
+
+                  # Ensure your DynamoDB table's primary key is indeed named 'id' and is a String.
+                  # If your key is (e.g. 'taskId'), change it here.
+                  key_to_delete = {'id': task_id}
+
+                  response_from_dynamo = table.delete_item(
+                      Key=key_to_delete,
+                      ReturnValues='ALL_OLD'
+                  )
+
+                  print(f"DynamoDB delete_item SDK response: {json.dumps(response_from_dynamo, cls=DecimalEncoder)}") # Use encoder for logging too
+
+                  if 'Attributes' in response_from_dynamo:
+                      deleted_item_attributes = response_from_dynamo['Attributes']
+                      print(f"Successfully deleted item: {json.dumps(deleted_item_attributes, cls=DecimalEncoder)}")
+                      return {
+                          'statusCode': 200,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          # Use the DecimalEncoder when creating the body
+                          'body': json.dumps({
+                              'message': f'Task {task_id} deleted successfully.',
+                              'deletedItem': deleted_item_attributes
+                          }, cls=DecimalEncoder)
+                      }
+                  else:
+                      print(f"No item found with ID '{task_id}' to delete, or it was already deleted.")
+                      # It's common to return 200 OK or 204 No Content for a DELETE on a non-existent resource
+                      # to indicate idempotency. The frontend expects a JSON body for success, so 200 is better here.
+                      return {
+                          'statusCode': 200, # Changed from 404 to 200 as per common practice for idempotent DELETE
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'message': f'No task found with ID {task_id} to delete, or it was already deleted.'})
+                      }
+
+              except boto3.exceptions.Boto3Error as be: # Catch Boto3 specific errors
+                  print(f"AWS SDK ERROR during deletion: {str(be)}")
+                  print(traceback.format_exc())
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': f'An AWS SDK error occurred: {str(be)}'})
+                  }
+              except Exception as e:
+                  print(f"GENERAL ERROR during deletion: {str(e)}")
+                  print(traceback.format_exc()) # Print full stack trace for the error
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': f'An unexpected error occurred: {str(e)}'})
+                  }
+  UpdateTaskFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ToDoUpdateFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref ToDoDynamoDBTable
+      Runtime: python3.13
+      Role: !GetAtt LambdaUpdateExecutionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import time
+          import traceback # For detailed error logging
+          from decimal import Decimal # Import Decimal
+
+          dynamodb = boto3.resource('dynamodb')
+          TABLE_NAME_FROM_ENV = os.environ.get('DYNAMODB_TABLE_NAME')
+          # It's good practice to ensure the table name is set, similar to your delete function.
+
+          # Helper class to convert a DynamoDB item to JSON.
+          # Specifically handles Decimal types.
+          class DecimalEncoder(json.JSONEncoder):
+              def default(self, o):
+                  if isinstance(o, Decimal):
+                      # If it's an integer, convert to int, otherwise float
+                      if o % 1 == 0:
+                          return int(o)
+                      else:
+                          return float(o)
+                  return super(DecimalEncoder, self).default(o)
+
+          def lambda_handler(event, context):
+              # Ensure DYNAMODB_TABLE_NAME environment variable is set
+              if not TABLE_NAME_FROM_ENV:
+                  print("CRITICAL ERROR: DYNAMODB_TABLE_NAME environment variable is not set!")
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': 'Server configuration error: Table name not set.'})
+                  }
+
+              table = dynamodb.Table(TABLE_NAME_FROM_ENV)
+              print(f"Using DynamoDB table: '{TABLE_NAME_FROM_ENV}'")
+              print(f"Received event for update: {json.dumps(event)}")
+
+              try:
+                  path_params = event.get('pathParameters', {})
+                  if not path_params: # Ensure pathParameters itself is not None
+                      print("Error: pathParameters is missing in the event.")
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'taskId is required in path parameters (pathParameters missing)'})
+                      }
+
+                  task_id = path_params.get('taskId')
+                  if task_id:
+                      task_id = task_id.strip()
+
+                  if not task_id:
+                      print("Error: taskId is required or was empty after strip.")
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'taskId is required in path parameters'})
+                      }
+
+                  # Defensive parsing of the body
+                  try:
+                      body_str = event.get('body', '{}')
+                      if not body_str: # Handle cases where body might be None
+                          body_str = '{}'
+                      body = json.loads(body_str)
+                      if not isinstance(body, dict): # Ensure body is a dictionary
+                          raise ValueError("Request body must be a JSON object.")
+                  except (json.JSONDecodeError, ValueError) as e:
+                      print(f"Error parsing request body: {str(e)}")
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': f'Invalid request body: {str(e)}'})
+                      }
+
+
+                  update_expression_parts = []
+                  expression_attribute_values = {}
+                  expression_attribute_names = {} # For attributes that are reserved keywords
+
+                  # Fields to update - ensure they exist in the body
+                  if 'description' in body and body['description'] is not None: # Check for None as well if empty strings are not desired
+                      update_expression_parts.append("#desc = :desc")
+                      expression_attribute_values[':desc'] = body['description']
+                      expression_attribute_names['#desc'] = 'description'
+
+                  if 'status' in body and body['status'] is not None:
+                      update_expression_parts.append("#stat = :stat")
+                      expression_attribute_values[':stat'] = body['status']
+                      expression_attribute_names['#stat'] = 'status' # 'status' IS a reserved word
+
+                  if not update_expression_parts:
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'No update fields provided or fields were null (description or status)'})
+                      }
+
+                  # Always add/update the 'updatedAt' timestamp
+                  update_expression_parts.append("#updatedAt = :updatedAt") # Using EAN for consistency and future-proofing
+                  expression_attribute_names['#updatedAt'] = 'updatedAt'
+                  expression_attribute_values[':updatedAt'] = int(time.time()) # This will be stored as a Number (Decimal in DynamoDB)
+
+                  update_expression = "SET " + ", ".join(update_expression_parts)
+
+                  # Construct parameters for update_item
+                  params = {
+                      'Key': {'id': task_id}, # Ensure 'id' is your primary key name
+                      'UpdateExpression': update_expression,
+                      'ExpressionAttributeValues': expression_attribute_values,
+                      'ReturnValues': "ALL_NEW" # Get the item attributes as they appear after the update
+                  }
+
+                  if expression_attribute_names: # Only add if there are names to map
+                      params['ExpressionAttributeNames'] = expression_attribute_names
+
+                  print(f"Attempting to update item '{task_id}' with params: {json.dumps(params, cls=DecimalEncoder)}") # Log params for debugging
+
+                  response = table.update_item(**params)
+                  updated_attributes = response.get('Attributes', {})
+
+                  print(f"DynamoDB update_item SDK response: {json.dumps(response, cls=DecimalEncoder)}")
+                  print(f"Successfully updated item. Attributes after update: {json.dumps(updated_attributes, cls=DecimalEncoder)}")
+
+                  return {
+                      'statusCode': 200,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      # Use the DecimalEncoder when creating the body
+                      'body': json.dumps(updated_attributes, cls=DecimalEncoder)
+                  }
+
+              # More specific error handling for boto3 client errors
+              except boto3.exceptions.Boto3Error as be: # More general AWS SDK errors
+                  error_message = f"AWS SDK error during update: {str(be)}"
+                  # Check for specific DynamoDB conditions like ConditionalCheckFailedException
+                  if hasattr(be, 'response') and 'Error' in be.response and be.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                      print(f"Conditional check failed for task '{task_id}': {str(be)}")
+                      return {
+                          'statusCode': 404, # Or 409 Conflict, or 400 Bad Request depending on semantic
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': f'Task {task_id} not found or update condition failed.'})
+                      }
+                  elif hasattr(be, 'response') and 'Error' in be.response and be.response['Error']['Code'] == 'ResourceNotFoundException':
+                      print(f"DynamoDB table '{TABLE_NAME_FROM_ENV}' not found: {str(be)}")
+                      return {
+                          'statusCode': 500,
+                          'headers': { 'Access-Control-Allow-Origin': '*' },
+                          'body': json.dumps({'error': 'Server configuration error: Target table not found.'})
+                      }
+
+                  print(f"{error_message}\n{traceback.format_exc()}")
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': error_message})
+                  }
+              except Exception as e:
+                  print(f"GENERAL ERROR during update for task '{task_id}': {str(e)}")
+                  print(traceback.format_exc())
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': f'An unexpected error occurred: {str(e)}'})
+                  }
+  CreateTaskFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ToDoCreateFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref ToDoDynamoDBTable
+      Runtime: python3.13
+      Role: !GetAtt LambdaCreateExecutionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid # To generate unique IDs
+          import os
+          import time
+
+          # Initialize DynamoDB client
+          dynamodb = boto3.resource('dynamodb')
+          # Get table name from environment variable for flexibility
+          TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'TodoListTasks') # Default if not set
+          table = dynamodb.Table(TABLE_NAME)
+
+          def lambda_handler(event, context):
+              try:
+                  # API Gateway usually passes the request body as a JSON string
+                  body = json.loads(event.get('body', '{}'))
+                  description = body.get('description')
+                  # status = body.get('status', 'pending') # As per SOW
+
+                  if not description:
+                      return {
+                          'statusCode': 400,
+                          'headers': { 'Access-Control-Allow-Origin': '*' }, # For CORS
+                          'body': json.dumps({'error': 'Description is required'})
+                      }
+
+                  task_id = str(uuid.uuid4())
+                  timestamp = int(time.time())
+
+                  item = {
+                      'id': task_id,
+                      'description': description,
+                      'status': body.get('status', 'pending'), # Default to 'pending'
+                      'createdAt': timestamp,
+                      'updatedAt': timestamp
+                  }
+
+                  table.put_item(Item=item)
+
+                  return {
+                      'statusCode': 201, # Created
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps(item)
+                  }
+              except Exception as e:
+                  print(f"Error: {e}") # This will go to CloudWatch Logs
+                  return {
+                      'statusCode': 500,
+                      'headers': { 'Access-Control-Allow-Origin': '*' },
+                      'body': json.dumps({'error': str(e)})
+                  }
+  ToDoRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "ToDoAPI"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  TasksResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ToDoRestApi.RootResourceId
+      PathPart: "tasks"
+      RestApiId: !Ref ToDoRestApi
+  TasksByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref TasksResource
+      PathPart: "{taskId}"
+      RestApiId: !Ref ToDoRestApi
+  OptionsTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      MethodResponses: # Defines what headers the method can return
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'" # Or your specific origin
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Api-Version'" # Customize as needed
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'" # Methods allowed on /tasks
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{ "statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters: # Defines what headers the MOCK integration WILL return
+              method.response.header.Access-Control-Allow-Origin: "'*'" # Or your specific origin
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Api-Version'" # Customize as needed
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'" # Methods allowed on /tasks
+            ResponseTemplates:
+              application/json: "{}" # Empty body for OPTIONS response
+  OptionsTasksByIdMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksByIdResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Api-Version'"
+            method.response.header.Access-Control-Allow-Methods: "'PUT,DELETE,OPTIONS'" # Methods allowed on /tasks/{taskId}
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{ "statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Api-Version'"
+              method.response.header.Access-Control-Allow-Methods: "'PUT,DELETE,OPTIONS'" # Methods allowed on /tasks/{taskId}
+            ResponseTemplates:
+              application/json: "{}"
+  GetTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt GetTaskFunction.Arn
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+        - StatusCode: '500'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+  PostTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt CreateTaskFunction.Arn
+      MethodResponses:
+        - StatusCode: '201' # Or 200, depending on your Create Lambda
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+        - StatusCode: '400'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+        - StatusCode: '500'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+  UpdateTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksByIdResource
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt UpdateTaskFunction.Arn
+      MethodResponses: # ADD or MODIFY this section
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+        - StatusCode: '400'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+        - StatusCode: '404'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+        - StatusCode: '500'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+  DeleteTasksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      ResourceId: !Ref TasksByIdResource
+      HttpMethod: DELETE
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt DeleteTaskFunction.Arn
+      MethodResponses: # ADD or MODIFY this section
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+        - StatusCode: '404' # If your Lambda returns 404 when item not found for delete
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+        - StatusCode: '500'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "*"
+  GetTaskLambdaApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GetTaskFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ToDoRestApi}/*"
+  UpdateTaskLambdaApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt UpdateTaskFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ToDoRestApi}/*"
+  DeleteTaskLambdaApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DeleteTaskFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ToDoRestApi}/*"
+  CreateTaskLambdaApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CreateTaskFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ToDoRestApi}/*"
+  ToDoApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: # Add this
+      - GetTasksMethod
+      - PostTasksMethod
+      - UpdateTasksMethod
+      - DeleteTasksMethod
+      - OptionsTasksMethod
+      - OptionsTasksByIdMethod
+      - TasksResource
+      - TasksByIdResource
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+  ApiGatewayDevStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref ToDoRestApi
+      DeploymentId: !Ref ToDoApiDeployment
+      StageName: !Ref StageName
+  S3WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      BucketName: !Sub "todo-app-frontend-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+  S3WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3WebBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${S3WebBucket}/*"
+  S3HtmlDeployFromGitHubFunctionRole: # Renamed for clarity
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "LambdaS3DeployAndGitHubFetchPolicy"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AllowLogging
+                Effect: Allow
+                Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+                Resource: "*"
+              - Sid: AllowS3PutDeleteObjectToTargetBucket
+                Effect: Allow
+                Action: ["s3:PutObject", "s3:PutObjectAcl", "s3:DeleteObject"]
+                Resource: !Sub "arn:aws:s3:::${S3WebBucket}/*" # Permission for target website bucket
+              # No explicit GitHub permissions if public repo and using raw content URL.
+              # For private repos, add Secrets Manager GetSecretValue permission here.
+
+  # --- Lambda Function for Custom Resource (S3 Deploy from GitHub) ---
+  S3HtmlDeployFromGitHubFunction: # Renamed for clarity
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-S3HtmlDeployFromGitHubFunction"
+      Runtime: python3.13
+      Role: !GetAtt S3HtmlDeployFromGitHubFunctionRole.Arn
+      Handler: index.lambda_handler
+      Timeout: 90 # Increased timeout for network call to GitHub
+      MemorySize: 128
+      # Environment: # For private repos, pass Secrets Manager secret ARN here
+      #   Variables:
+      #     GITHUB_TOKEN_SECRET_ARN: "arn:aws:secretsmanager:..."
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request # Standard library for HTTP GET
+          import urllib.error   # For specific error handling
+          import urllib3        # For the cfn_response sender
+          import logging
+          import os
+          import traceback
+
+          s3_client = boto3.client('s3')
+          # For private repos (ensure GITHUB_TOKEN_SECRET_ARN env var is set if used):
+          # secrets_manager_client = boto3.client('secretsmanager')
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          # Using urllib3 PoolManager for sending CFN response
+          http_pool = urllib3.PoolManager()
+
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+
+          def send_cfn_response(event, context, response_status, response_data, physical_resource_id=None, no_echo=False, reason=None):
+              response_url = event['ResponseURL']
+              
+              # Ensure physical_resource_id is provided, default to log stream name if truly necessary for some reason
+              # but better to construct a meaningful one or use the one from the event for Update/Delete
+              resolved_physical_resource_id = physical_resource_id if physical_resource_id is not None else context.log_stream_name
+              
+              response_body = {
+                  'Status': response_status,
+                  'Reason': reason or f"Details in CloudWatch Log Stream: {context.log_stream_name}",
+                  'PhysicalResourceId': resolved_physical_resource_id,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'NoEcho': no_echo,
+                  'Data': response_data
+              }
+              json_response_body = json.dumps(response_body)
+              
+              logger.info(f"CFN Response Body: {json_response_body}")
+              
+              headers = {
+                  'content-type': '',  # Standard practice for CFN response
+                  'content-length': str(len(json_response_body))
+              }
+              
+              try:
+                  http_pool.request(
+                      'PUT',
+                      response_url,
+                      headers=headers,
+                      body=json_response_body.encode('utf-8')
+                  )
+                  logger.info("Successfully sent CloudFormation response.")
+              except Exception as e:
+                  logger.error(f"Failed to send CloudFormation response: {str(e)}\n{traceback.format_exc()}")
+          def lambda_handler(event, context):
+              request_type = event['RequestType']
+              props = event.get('ResourceProperties', {})
+              
+              # Extract properties from the Custom Resource event
+              target_bucket_name = props.get('TargetBucketName')
+              api_url_base = props.get('ApiGatewayBaseUrl')
+              target_object_key = props.get('TargetObjectKey', 'index.html') # Default object key
+              
+              github_owner = props.get('GitHubRepoOwner')
+              github_repo = props.get('GitHubRepoName')
+              github_file_path = props.get('GitHubFilePath') # e.g., "public/index.html" or "index.html"
+              github_ref = props.get('GitHubRef', 'main')     # Default to 'main' branch/ref
+                                  
+              # Construct a stable PhysicalResourceId for updates and deletes
+              # For Create, CloudFormation doesn't pass PhysicalResourceId. For Update/Delete, it does.
+              if request_type == 'Create':
+                  # Generate a new PhysicalResourceId for Create; it should be unique and stable if possible
+                  # or let CloudFormation manage it via the one you return.
+                  # Using a combination of critical inputs can work if they don't change often.
+                  # A simpler approach for many custom resources is context.log_stream_name for CREATE
+                  # or a UUID, but for file deployment, this combo is descriptive.
+                  physical_resource_id = f"s3-github-file-{target_bucket_name}-{target_object_key}"
+              else: # Update or Delete
+                  physical_resource_id = event['PhysicalResourceId']
+                  
+              response_data = {}
+              
+              try:
+                  logger.info(f"RequestType: {request_type}, PhysicalResourceId: {physical_resource_id}, Properties: {json.dumps(props)}")
+                  
+                  # Validate required properties
+                  required_props = ['TargetBucketName', 'ApiGatewayBaseUrl', 'TargetObjectKey', 'GitHubRepoOwner', 'GitHubRepoName', 'GitHubFilePath']
+                  missing_props = [p for p in required_props if not props.get(p)]
+                  if missing_props:
+                      error_msg = f"Missing required ResourceProperties: {', '.join(missing_props)}"
+                      logger.error(error_msg)
+                      send_cfn_response(event, context, FAILED, {"Error": error_msg}, physical_resource_id, reason=error_msg)
+                      return
+                  
+                  if request_type == 'Create' or request_type == 'Update':
+                      logger.info(f"Processing {request_type} for s3://{target_bucket_name}/{target_object_key}")
+
+                      # 1. Construct GitHub Raw Content URL
+                      raw_github_url = f"https://raw.githubusercontent.com/{github_owner}/{github_repo}/{github_ref}/{github_file_path}"
+                      logger.info(f"Fetching content from GitHub: {raw_github_url}")
+
+                      request_headers = {'Accept': 'application/vnd.github.v3.raw'} # Good practice for raw content
+                      
+                      req = urllib.request.Request(raw_github_url, headers=request_headers)
+                      
+                      try:
+                          with urllib.request.urlopen(req, timeout=30) as response: # 30 sec timeout
+                              if response.status == 200:
+                                  html_template_from_github = response.read().decode('utf-8')
+                                  logger.info(f"Successfully fetched content from GitHub. Length: {len(html_template_from_github)}")
+                              else:
+                                  error_body = response.read().decode('utf-8', errors='ignore')
+                                  raise Exception(f"GitHub returned status {response.status} {response.reason}. Body: {error_body}")
+                      except urllib.error.HTTPError as e:
+                          error_body = e.read().decode('utf-8', errors='ignore') # Read error body from GitHub
+                          error_msg = f"HTTPError fetching from GitHub ({e.code} {e.reason}): {error_body}"
+                          logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                          raise Exception(error_msg) # Re-raise to be caught by general handler
+                      except urllib.error.URLError as e:
+                          error_msg = f"URLError fetching from GitHub: {e.reason}"
+                          logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                          raise Exception(error_msg) # Re-raise
+
+                      # 2. Replace placeholder in the fetched content
+                      logger.info(f"Replacing placeholder '%%API_GATEWAY_BASE_URL%%' with '{api_url_base}'")
+                      final_html_content = html_template_from_github.replace('%%API_GATEWAY_BASE_URL%%', api_url_base)
+                      
+                      # 3. Upload the processed content to the target S3 bucket
+                      logger.info(f"Uploading processed content to s3://{target_bucket_name}/{target_object_key}")
+                      s3_client.put_object(
+                          Bucket=target_bucket_name,
+                          Key=target_object_key,
+                          Body=final_html_content.encode('utf-8'),
+                          ContentType='text/html' # Assuming it's HTML
+                          # ACL='public-read' # REMOVED: Manage public access via Bucket Policy if ObjectOwnership is BucketOwnerEnforced
+                      )
+                      logger.info("Successfully uploaded to S3.")
+                      
+                      response_data['Message'] = f"Successfully deployed '{target_object_key}' from GitHub to S3 bucket '{target_bucket_name}'."
+                      response_data['S3ObjectUrl'] = f"s3://{target_bucket_name}/{target_object_key}"
+                      response_data['WebsiteURL'] = f"http://{target_bucket_name}.s3-website-{os.environ['AWS_REGION']}.amazonaws.com/{target_object_key}" # Construct a potential website URL
+                      send_cfn_response(event, context, SUCCESS, response_data, physical_resource_id)
+
+                  elif request_type == 'Delete':
+                      logger.info(f"Processing Delete request for s3://{target_bucket_name}/{target_object_key}")
+                      try: 
+                          s3_client.delete_object(Bucket=target_bucket_name, Key=target_object_key)
+                          logger.info(f"Successfully deleted '{target_object_key}' from S3 bucket '{target_bucket_name}'.")
+                      except Exception as e: 
+                          # Log as warning because if the object isn't there, delete is still "successful" in terms of state
+                          logger.warning(f"Could not delete '{target_object_key}' from S3 (might not exist or other issue): {str(e)}")
+                      send_cfn_response(event, context, SUCCESS, {}, physical_resource_id) # Send success even if object was already gone
+                      
+                  else: 
+                      error_msg = f"Unsupported RequestType: {request_type}"
+                      logger.error(error_msg)
+                      send_cfn_response(event, context, FAILED, {"Error": error_msg}, physical_resource_id, reason=error_msg)
+                      
+              except Exception as e:
+                  error_msg = f"Unhandled exception in handler: {str(e)}"
+                  logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                  send_cfn_response(event, context, FAILED, {"Error": error_msg}, physical_resource_id, reason=error_msg)
+  IndexHtmlCustomResource:
+    Type: Custom::S3HtmlDeployFromGitHub # Custom type name
+    Properties:
+      ServiceToken: !GetAtt S3HtmlDeployFromGitHubFunction.Arn # Use the new Lambda
+      
+      TargetBucketName: !Ref S3WebBucket
+      TargetObjectKey: index.html
+      
+      GitHubRepoOwner: !Ref GitHubRepoOwner
+      GitHubRepoName: !Ref GitHubRepoName
+      GitHubFilePath: !Ref GitHubFilePath
+      GitHubRef: !Ref GitHubRef
+      
+      ApiGatewayBaseUrl: !Sub "https://${ToDoRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}" # Ensure ToDoRestApi and ApiGatewayDevStage are defined
+    DependsOn:
+      - ApiGatewayDevStage # Crucial for ApiGatewayBaseUrl
+      - S3WebBucketPolicy
+      - S3HtmlDeployFromGitHubFunctionRole # Ensure role is created
+Outputs:
+  ApiGatewayInvokeUrl:
+    Description: "Invoke URL for your API Gateway stage"
+    Value: !Sub "https://${ToDoRestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+  S3WebsiteUrl:
+    Description: "URL for the S3 hosted website"
+    Value: !GetAtt S3WebBucket.WebsiteURL
+    Export:
+      Name: !Sub "${AWS::StackName}-S3WebsiteUrl"
